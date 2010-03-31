@@ -427,7 +427,7 @@ class Looah
                 
                 proc_close($proc);
                 
-                throw new TimeExceededException('Max execution time reached (thrown by Lua)');
+                throw new TimeExceededException('Max execution time reached');
             }
             
             $line = fgets($pipes[1]);
@@ -472,7 +472,7 @@ class Looah
             } else if (preg_match('/RECURSION_LIMIT$/', $err)) {
                 throw new StackOverflowException("Stack overflow");
             } else if (preg_match('/TIME_LIMIT$/', $err)) {
-                throw new TimeExceededException("Max execution time reached");
+                throw new TimeExceededException("Max execution time reached (thrown by Lua)");
             } else {
                 $err = preg_replace('/^\[.+?\]:(.+?):/', '$1:', $err);
                 throw new LuaErrorException($err);
