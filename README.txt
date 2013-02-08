@@ -3,7 +3,13 @@ Looah: Sandboxed Lua for PHP
  
 Copyright (c) 2008 Fran Rogers
 Copyright (c) 2010 sk89q <http://www.sk89q.com>
- 
+
+Note
+------------
+
+This version of Looah is provided without example code, and with a slightly
+modified directory structure, so it can be more easily submoduled.
+
 Introduction
 ------------
 
