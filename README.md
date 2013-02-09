@@ -1,6 +1,6 @@
 Looah: Sandboxed Lua for PHP 
+================================
 fork with PHP control of the execution environment
-<http://github.com/sk89q/looah>
  
 Copyright (c) 2008 Fran Rogers
 
