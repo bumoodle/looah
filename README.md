@@ -3,8 +3,10 @@ fork with PHP control of the execution environment
 <http://github.com/sk89q/looah>
  
 Copyright (c) 2008 Fran Rogers
-Copyright (c) 2010 sk89q <http://www.sk89q.com>
-Copyright (c) 2013 Kyle J. Temkin <ktemkin@binghamton.edu>
+
+Copyright (c) 2010 sk89q <http://www.sk89q.com> 
+
+Copyright (c) 2013 Kyle J. Temkin <ktemkin@binghamton.edu> 
 
 Note
 ------------
