@@ -3,6 +3,7 @@
 --
 -- Copyright (c) 2008 Fran Rogers
 -- Copyright (c) 2010 sk89q <http://www.sk89q.com>
+-- Modified by Kyle J. Temkin, <ktemkin@binghamton.edu>
 -- 
 -- This software is provided 'as-is', without any express or implied
 -- warranty.  In no event will the authors be held liable for any damages
@@ -21,8 +22,12 @@
 -- 3. This notice may not be removed or altered from any source distribution.
 --
 
+require 'lib/json'
+require 'lib/base64'
+
 -- Creates a new sandbox environment for scripts to safely run in.
-function make_sandbox()
+function make_sandbox(base_environment)
+
   -- Dummy function that returns nil, to quietly replace unsafe functions
   local function dummy(...)
     return nil
@@ -53,6 +58,25 @@ function make_sandbox()
 
   -- Our new environment
   local env = {}
+
+  --Copy in the values from the base environment,
+  --if one was provided.
+  if base_environment then
+
+    --Restore all variables to the environment...
+    for i, v in pairs(base_environment) do
+      env[i] = v
+    end
+
+    --... and restore this environment's functions.
+    if type(env._FUNCTIONS) == 'table' then
+      restore_functions(env)
+    end
+  end
+
+
+  --Create an easy reference to this system's state.
+  env._STATE = base_environment
 
   -- "_OUTPUT" will accumulate the results of print() and friends
   env._OUTPUT = ""
@@ -182,27 +206,156 @@ function make_hook(maxlines, maxcalls, maxtime, diefunc)
   return _hook
 end
 
+--
+-- Retrieves a reverse-dictionary of all variables in the
+-- given environment, which can easily be used to check
+-- a variables' existance.
+--
+function get_all_variable_names(sandbox, exclude, functions)
+  local vars = {}
+    
+  exclude = exclude or {}
+
+  --If the "always include functions" option is set, add the names 
+  --of any existing _FUNCTIONS to the _exclude_ array.
+  if type(sandbox._FUNCTIONS) == 'table' and functions then
+    for i in pairs(sandbox._FUNCTIONS) do
+      exclude[i] = true
+    end
+  end
+
+  --Get the name of all defined variables.
+  for i in pairs(sandbox) do
+    if not exclude[i] then
+      vars[i] = true
+    end
+  end
+
+  return vars
+end
+
+--
+-- Creates a duplicate of the given environment which is ready
+-- for serialization; and serializes any contained functions.
+-- 
+-- TODO: Perform deep copy, with nested functions.
+--
+-- environment: A table containing the environment to be serialized.
+-- exclude: A table whose keys specify which elements should be excluded 
+--     from serialization.
+--
+function prepare_for_serialization(environment, exclude)
+  local vars = {}
+
+  --Create an empty store of function definitions.
+  local functions = {}
+
+  --If exclude was omitted, use an empty table instead.
+  exclude = exclude or {}
+
+  --Add each variable which isn't in the exceptions list to the 
+  --provided table.
+  for i, v in pairs(environment) do
+    if not exclude[i] then
+
+      --If we have a function, add it to our functions array.
+      --
+      --Converting this to base64 eliminates the encoding issues
+      --which are prevalent on PHP (and in many database applications.)
+      --Note that php's json_decode is currently broken when it comes to
+      --binary data (e.g. unicode escape codes).
+      if type(v) == 'function' then
+        functions[i] = to_base64(string.dump(v))
+
+      --If we have a table, recurse to encapsulate each of its components.
+      elseif type(v) == 'table' then
+        vars[i] = prepare_for_serialization(v)
+
+      --Otherwise, add it to our variables array.
+      else
+        vars[i] = v
+      end
+
+    end
+  end
+
+  --Add a local array of serialized functions, which can be used to
+  --reacreate the functions provided at deserailziation time.
+  vars._FUNCTIONS = functions
+
+  return vars
+end
+
+--
+-- Recursively restores all serialized functions (_FUNCTION objects)
+-- present in the given environment. 
+--
+function restore_functions(environment) 
+
+  --Base case: restore each function in the top-level of the environment.
+  if type(environment._FUNCTIONS) == 'table' then
+    for i, v in pairs(environment._FUNCTIONS) do
+      environment[i] = loadstring(from_base64(v))
+    end
+  end
+
+  --Recursive case: if any member of the environment has its own functions,
+  --restore those.
+  for i, v in pairs(environment) do
+    if type(v) == 'table' then
+      restore_functions(v)
+    end
+  end
+
+end
+
+--
+-- Retrieves the name of all 
+function get_all_function_names(environment)
+
+  local target = {}
+
+  --Base case: restore each function in the top-level of the environment.
+  if type(environment._FUNCTIONS) == 'table' then
+    for i in pairs(environment._FUNCTIONS) do
+      target[i] = true
+    end
+  end
+
+  return target
+
+end
+
 -- Creates and returns a function, 'wrap(input)', which reads a string into 
 -- a Lua chunk and executes it in a persistent sandbox environment, returning 
 -- 'output, err' where 'output' is the combined output of print() and friends 
 -- from within the chunk and 'err' is either nil or an error incurred while 
 -- executing the chunk; or halting after 'maxlines' lines, 'maxcalls' levels 
 -- of recursion, or 'maxtime' seconds.
-function make_wrapper(maxlines, maxcalls, maxtime)
-  -- Create the debug hook and sandbox environment.
-  local hook = make_hook(maxlines, maxcalls, maxtime)
-  local env = make_sandbox()
+function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
   
+  local hook = make_hook(maxlines, maxcalls, maxtime)
+  local env = make_sandbox(base_environment)
+
+  --Retreive a list of variables which only exist in the sandbox.
+  --This is used to differentiate user variables from variables created by
+  --the sandbox.
+  local sandbox_variables = get_all_variable_names(env, base_environment, true)
+
   -- The actual 'wrap()' function.
   -- All of the above variables will be bound in its closure.
   function _wrap(chunkstr)
+
     local chunk, err, done
+    
     -- Clear any leftover output from the last call
     env._OUTPUT = ""
     err = nil
     
     -- Load the string into a chunk; fail on error
     chunk, err = loadstring(chunkstr)
+
+    --If an error has occcurred, return it.
     if err ~= nil then
       return nil, err
     end
@@ -213,50 +366,82 @@ function make_wrapper(maxlines, maxcalls, maxtime)
     debug.sethook(co, hook, "crl")
     done, err = coroutine.resume(co)
     
+    --If we were able to finish the 
     if done == true then
       err = nil
     end
+
+    export_vars = prepare_for_serialization(env, sandbox_variables)
     
     -- Collect and return the results
-    return env._OUTPUT, err
+    return env._OUTPUT, err, export_vars 
+
   end
   return _wrap
+end
+
+--
+-- Attempts to create an initial environment for a given sandbox
+-- given a JSON string.
+--
+function extract_initial_environment(first_line) 
+  local base_environment = json.decode(first_line)
+
+  --If we weren't able to correctly parse the json string as a table,
+  --then return an empty table.
+  if type(base_environment) ~= "table" then
+    base_environment = {}
+  end
+
+  return base_environment
 end
 
 -- Listen on stdin for Lua chunks, parse and execute them, and print the 
 -- results of each on stdout.
 function main(arg)
+
+  --If we weren't provided the correct amount of arguments, display usage information.
   if #arg ~= 3 then
     io.stderr:write(string.format("usage: %s MAXLINES MAXCALLS MAXTIME\n", arg[0]))
     os.exit(1)
   end
-
-  -- Create a wrapper function, wrap()
-  local wrap = make_wrapper(tonumber(arg[1]), tonumber(arg[2]), tonumber(arg[3]))
-
+  
   -- Turn off buffering, and loop through the input
   io.stdout:setvbuf("no")
+  
+  -- Attempt to extract the base environment from the first line provided on the standard input.
+  -- This will be used to set variables in the sandbox.
+  local base_environment = extract_initial_environment(io.stdin:read("*l"))
+  
+  -- Create a wrapper function, wrap()
+  local wrap = make_wrapper(tonumber(arg[1]), tonumber(arg[2]), tonumber(arg[3]), base_environment)
+
+  -- Parse lines until the file ends.
   while true do
     -- Read in a chunk
     local chunkstr = ""
     while true do
+
       local line = io.stdin:read("*l")
+
       if chunkstr == "" and line == nil then
-    -- On EOF, exit.
-    os.exit(0)
+        -- On EOF, exit.
+        os.exit(0)
+
       elseif line == "." or line == nil then
-    -- Finished this chunk; move on to the next step
-    break
+        -- Finished this chunk; move on to the next step
+        break
       elseif chunkstr ~= "" then
-    chunkstr = chunkstr .. "\n" .. line
+        chunkstr = chunkstr .. "\n" .. line
       else
-    chunkstr = line
+        chunkstr = line
       end
+
     end
 
     -- Parse and execute the chunk
     local res, err
-    res, err = wrap(chunkstr, env, hook)
+    res, err, state = wrap(chunkstr, env, hook)
 
     -- Write out the results
     if err == nil then
@@ -264,6 +449,10 @@ function main(arg)
     else
       io.stdout:write("'", err, "', false\n.\n")
     end
+    
+    --Write the final execution state to the standard output.
+    io.stdout:write(json.encode(state), "\n")
+ 
   end
 end
 

@@ -1,7 +1,8 @@
 <?php // $Id$
 /*
  * Copyright (c) 2008 Fran Rogers
- * Copyright (c) 2010 sk89q <http://www.sk89q.com>
+ * Copyright (c) 2011 sk89q <http://www.sk89q.com>
+ * Copyright (c) 2012 Kyle Temkin <ktemkin@binghamton.edu>
  * 
  * This software is provided 'as-is', without any express or implied
  * warranty.  In no event will the authors be held liable for any damages
@@ -46,6 +47,8 @@ namespace looah;
  */
 class Looah
 {
+    const FINAL_STATE_TIMEOUT = 2;
+
     /**
      * Maximum number of lines to execute before aborting. This constraint is
      * enforced using Lua sandbox code.
@@ -286,21 +289,40 @@ class Looah
      * @return string Output
      * @throws LooahException
      */
-    public function execute($input)
+    public function execute($input, &$environment=null)
     {
+        //Change the local working directory to match the path from
+        //which the lua wrapper will be executed, so lua's require works.
+        $original_dir = getcwd();
+        chdir(dirname($this->getCompiledWrapperPath()));
+
+        //If we haven't been provided with a lua interpreter, attempt
+        //to use the LUA php extension. This is preferred, as it doesn't
+        //incur the overhead of starting a new process.
         if (!$this->interpreterPath) {
-            $result = $this->executeWithExtension($input);
+          $result = $this->executeWithExtension($input, $environment);
+
+        //Otherwise, use the Lua interpret provided with the system.
         } else {
-            if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
-                throw new LooahException("Windows is not supported with the interpreter");
-            }
+
+          //TODO: remove the posix-specific stuff.
+          if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+              throw new LooahException("Windows is not supported with the interpreter");
+          }
             
-            $result = $this->executeWithInterpreter($input);
+          $result = $this->executeWithInterpreter($input, $environment);
         }
-        
+
+        //Restore the original working directory.
+        chdir($original_dir);
+
+        //Extract the newly-created environment from the results.
+        $environment = array_pop($result);
+
         return $this->process($result);
     }
-    
+
+
     /**
      * Find the children of a process.
      * 
@@ -349,114 +371,226 @@ class Looah
      * @param string $input
      * @return array<string> Stdout and stderr
      */
-    private function executeWithExtension($input)
+    private function executeWithExtension($input, $base_environment = null)
     {
+        //Create an empty base environment, if we weren't provided with one.
+        $base_environment = $base_environment ?: array();
+
         // We're using the extension - verify it exists
         if (!class_exists('lua')) {
             throw new LooahException("The Lua extension is unavailable");
         }
-
+    
         // Create a lua instance and load the wrapper library
-        $lua = new lua();
+        $lua = new \lua();
         
         try {
-            $lua->evaluatefile($this->getCompiledWrapperPath());
-            $lua->evaluate("wrap = make_wrapper({$this->maxLines}, {$this->maxRecursionDepth})");
+            $lua->include($this->getCompiledWrapperPath());
+            $lua->assign('base_environment', $base_environment);
+            $lua->eval("wrap = make_wrapper({$this->maxLines}, {$this->maxRecursionDepth}, {$this->maxTime}, base_environment)");
             $res = $lua->wrap($input);
-            return array($res[0], $res[1]);
+
+            return $res;
         } catch (Exception $e) {
             throw new LooahException("Could not the evaluate Lua sandbox wrapper script");
         }
     }
-    
+
+    /**
+     * Creates a new Lua interpreter process, and establishes IPC channels.
+     *
+     * @return array<resource, array>   Returns the process object and all of the pipes created, in array($proc, $pipes) format.
+     */
+    private function create_interpreter() {
+
+        $wrapper_path = escapeshellarg($this->getCompiledWrapperPath());
+
+        //Consturct the command which will be used to start the sandboxed Lua interpreter.
+        $cmd = sprintf("{$this->interpreterPath} %s %d %d %d", $wrapper_path,
+           $this->maxLines, $this->maxRecursionDepth, $this->maxTime);
+
+        //Set up the pipes which will be used for IPC with the interpreter.
+        $io_pipes = array(0 => array('pipe', 'r'), 1 => array('pipe', 'w'));
+        $pipes = array();
+
+        //Attempt to open the LUA interpreter.  
+        $proc = proc_open($cmd, $io_pipes, $pipes, null, null);
+
+        //If we weren't able to open the LUA interpreter, assume it's missing. 
+        if (!is_resource($proc)) {
+            throw new LooahException("External Lua interpreter not found");
+        }
+
+        //Ensure that we don't buffer or block when communicating with the LUA
+        //interpreter; this prevents (potentially infinite) 
+        //delays when short input is provided. 
+        foreach($pipes as $pipe) {
+          stream_set_blocking($pipe, 0);
+          stream_set_write_buffer($pipe, 0); 
+        }
+
+        //And return the newly-created objects.
+        return array($proc, $pipes);
+    }
+
+    /**
+     * Terminates the specified interpreter.
+     *
+     * @param resource $proc   The process for the running interpreter.
+     * @param array<resource> $pipes  An array containing all pipes belonging to the process. 
+     * @param bool $exceeded_time If true, an "Exceeded Time" exception is raised.
+     */
+    private function killInterpreter($proc, $pipes, $exceeded_time = false) {
+          
+      //Check to see if the process is still running.
+      $status = proc_get_status($proc);
+
+      //If it is, destory all relevant resources.
+      if ($status['running'] == true) {
+
+          //Close the pipes connecting to it...
+          foreach($pipes as $pipe) {
+            fclose($pipe);
+          }
+
+          //And kill the process. 
+          //Note that both terminates is required for safety.  
+          $this->killProcess($status['pid']);
+          proc_terminate($proc);
+      }
+
+      //Close the process object, and raise an exception indicating 
+      //that we timed out.
+      proc_close($proc);
+
+      //If the exceeded time flag is set, raise an exception.
+      if($exceeded_time) {
+        throw new TimeExceededException('Max execution time reached');
+      }
+    }
+
+    /**
+     * Reads a single line of text from the provided stream object.
+     *
+     * @param array $pipes An array containing the single relevant pipe. An array
+     *   is required for compatibility with stream_select.
+     * @param integer $timeout The maximum number of seconds that the read should block for.
+     * @return string A single line from the 
+     */ 
+    private function read_line_from_stream($proc, &$pipes, $timeout) {
+  
+        //Wait for the stream to change statuas, indicating a response.
+        //If the stream takes more than maxTime to respond, force it to terminate.
+        $null = null;
+        $num = stream_select($pipes, $null, $null, $timeout);
+
+        //If a failure condition occured, kill the interpreter. 
+        if ($num === false || $num === 0) {
+          $this->killInterpreter($proc, $pipes, true);
+          //This raises an exception; so we don't need to return.
+        }
+
+        //Get a line from the interpreter's standard output... 
+        return fgets($pipes[0]);
+    }
+
+    /**
+     * Sends a "line" of code-data to the Lua interpreter.
+     *
+     * @param resource $pipe An array whose first element contains the pipe to connect to.
+     */
+    private static function send_to_interpreter($pipe, $data) {
+        fwrite($pipe, $data."\n");
+        fflush($pipe);
+    }
+
+    /**
+     * Formats a chunk of Lua code for transmission to the interpreter.
+     * 
+     * @param string $chunk The chunk of lua code to be formatted.
+     * @return string The lua code in a format ready for transmission.
+     */
+    private static function format_chunk($chunk) {
+
+      //Sanitize the chunk, removing any existing end-of-chunk delimiters.
+      $chunk = trim(preg_replace('/(?<=\n|^)\.(?=\n|$)/', '. --', $chunk));
+
+      //And append the end-of-chunk delimiter.
+      return $chunk."\n.";
+    }
+
+
     /**
      * Execute Lua code with the external Lua interpreter.
      * 
      * @param string $input
+     * @param array  $environment The basic environment to be created inside of the interpreter.
      * @return array<string> Stdout and stderr
      */
-    private function executeWithInterpreter($input)
+    private function executeWithInterpreter($input, $base_environment = null)
     {
-        $cmd = sprintf("{$this->interpreterPath} %s %d %d %d",
-                       escapeshellarg($this->getCompiledWrapperPath()),
-                       $this->maxLines, $this->maxRecursionDepth, $this->maxTime);
-        
-        $dspec = array(0 => array('pipe', 'r'),
-                       1 => array('pipe', 'w'));
-        
-        $pipes = array();
-        
-        $proc = proc_open($cmd, $dspec, $pipes, null, null);
-        
-        if (!is_resource($proc)) {
-            throw new LooahException("External Lua interpreter not found");
-        }
-        
-        stream_set_blocking($pipes[0], 0);
-        stream_set_blocking($pipes[1], 0);
-        stream_set_write_buffer($pipes[0], 0);
-        stream_set_write_buffer($pipes[1], 0);
-        
-        // We're using an external binary; send the chunk through the pipe
-        $input = trim(preg_replace('/(?<=\n|^)\.(?=\n|$)/', '. --', $input));
-        fwrite($pipes[0], "$input\n.\n");
-        fflush($pipes[0]);
+
+        //Create a connection to a LUA interpreter.
+        list($proc, $pipes) = $this->create_interpreter();
+
+        //Send the base state to the interpreter using JSON.
+        $base_environment = $base_environment ?: array();
+        self::send_to_interpreter($pipes[0], json_encode($base_environment));
+
+        //Transmit the chunk to be executed.
+        self::send_to_interpreter($pipes[0], self::format_chunk($input));
+
+        //Create an object which always points to the currently
+        //interpreter output. This will be modified by calls below.
+        $interpreter_out = array($pipes[1]);
 
         // Wait for a response back on the other pipe
-        $res = "";
-        $read = array($pipes[1]);
-        $write = null;
-        $except = null;
-        
+        $response = "";
+
+        $state = array();
+
+        //While there's data to read on the standard out, handle it. 
         while (!feof($pipes[1])) {
-            $num = stream_select($read, $write, $except, $this->maxTime);
-            
-            if ($num === false || $num === 0) {
-                // Time to kill the thread
-                // proc_terminate() is useless in this endeavor
-                $status = proc_get_status($proc);
-                
-                if ($status['running'] == true) {
-                    fclose($pipes[0]);
-                    fclose($pipes[1]);
-                    
-                    $this->killProcess($status['pid']);
-                    // We have to do this just in case
-                    proc_terminate($proc);
-                }
-                
-                proc_close($proc);
-                
-                throw new TimeExceededException('Max execution time reached');
-            }
-            
-            $line = fgets($pipes[1]);
+
+            //Read a single line of data from the stream.
+            $line = $this->read_line_from_stream($proc, $interpreter_out, $this->maxTime);
+
+            //If this was our end-of-response indicator...
             if ($line == ".\n") {
+
+                //... receive the system's state...
+                $encoded_state = $this->read_line_from_stream($proc, $interpreter_out, $this->maxTime);
+                $state = json_decode($encoded_state, true);
+                
+                //... and stop reading the response.
                 break;
             }
-            
-            $res .= $line;
-        }
-        
-        // No try {} finally {} support, because PHP sucks
-        fclose($pipes[0]);
-        fclose($pipes[1]);
-        proc_close($proc);
 
-        // Parse the response and collect the results
-        if (preg_match('/^\'(.*)\', (true|false)$/s', trim($res), $match) != 1) {
-            throw new LooahException('Internal error');
+            //Append the output we received to the buffer. 
+            $response .= $line;
         }
         
-        $success = ($match[2] == "true");
-        $out = $success ? $match[1] : "";
-        $err = $success ? null : $match[1];
-        
-        return array($out, $err);
+        //Ensure the interpreter process is killed properly.
+        $this->killInterpreter($proc, $pipes);
+
+        //If the repsonse didn't match our expected format, raise an exception.
+        if (preg_match('/^\'(.*)\', (true|false)$/s', trim($response), $match) != 1) {
+            throw new LooahException('Internal error: '.$response);
+        }
+
+        //If Lua hasn't reported any problems,  
+        //return the output without any errors...
+        if($match[2] == true) {
+          return array($match[1], null, $state);
+        }
+        //Otherwise, return only the output.
+        else {
+          return array('', $match[1], $state);
+        }
     }
 
     /**
-     * Do some processing.
+     * Process the result, and extract any relevant error messages.
      * 
      * @param array<string> $result
      * @return string
@@ -464,7 +598,7 @@ class Looah
     private function process($result)
     {
         list($out, $err) = $result;
-        
+       
         // If an error was raised, abort and throw an exception
         if ($err != null) {
             if (preg_match('/LOC_LIMIT$/', $err)) {
@@ -479,6 +613,7 @@ class Looah
             }
         }
 
-        return (trim($out) != "") ? $out : "";
+        //If no meaningful output was produced, truncate the output to an empty string.
+        return (trim($out) != "") ? $out: "";
     }
 }
