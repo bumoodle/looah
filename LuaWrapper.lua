@@ -74,10 +74,6 @@ function make_sandbox(base_environment)
     end
   end
 
-
-  --Create an easy reference to this system's state.
-  env._STATE = base_environment
-
   -- "_OUTPUT" will accumulate the results of print() and friends
   env._OUTPUT = ""
 
@@ -170,6 +166,10 @@ function make_sandbox(base_environment)
   env.os.difftime = _G.os.difftime
   env.os.time = _G.os.time
 
+  --Allow JSON encode
+  env.json = _G.json
+  --env.json.encode = _G.json.encode
+  
   -- Return the new sandbox environment
   return env
 end
@@ -244,10 +244,8 @@ end
 -- exclude: A table whose keys specify which elements should be excluded 
 --     from serialization.
 --
-function prepare_for_serialization(environment, exclude)
+function prepare_for_serialization(environment, exclude, include_functions)
   local vars = {}
-
-  --Create an empty store of function definitions.
   local functions = {}
 
   --If exclude was omitted, use an empty table instead.
@@ -264,11 +262,11 @@ function prepare_for_serialization(environment, exclude)
       --which are prevalent on PHP (and in many database applications.)
       --Note that php's json_decode is currently broken when it comes to
       --binary data (e.g. unicode escape codes).
-      if type(v) == 'function' then
+      if type(v) == 'function' and include_functions then
         functions[i] = to_base64(string.dump(v))
 
       --If we have a table, recurse to encapsulate each of its components.
-      elseif type(v) == 'table' then
+      elseif type(v) == 'table' and i ~= '_FUNCTIONS' then
         vars[i] = prepare_for_serialization(v)
 
       --Otherwise, add it to our variables array.
@@ -298,6 +296,7 @@ function restore_functions(environment)
       environment[i] = loadstring(from_base64(v))
     end
   end
+
 
   --Recursive case: if any member of the environment has its own functions,
   --restore those.
@@ -348,7 +347,7 @@ function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
 
     local chunk, err, done
     
-    -- Clear any leftover output from the last call
+    -- Clear any leftover output/functions from the last call
     env._OUTPUT = ""
     err = nil
     
@@ -357,7 +356,7 @@ function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
 
     --If an error has occcurred, return it.
     if err ~= nil then
-      return nil, err
+      return nil, err, base_environment
     end
     
     -- Set the chunk's environment, enable the debug hook, and execute it
@@ -372,7 +371,7 @@ function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
     end
 
     export_vars = prepare_for_serialization(env, sandbox_variables)
-    
+
     -- Collect and return the results
     return env._OUTPUT, err, export_vars 
 

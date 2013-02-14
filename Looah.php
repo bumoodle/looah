@@ -296,6 +296,10 @@ class Looah
         $original_dir = getcwd();
         chdir(dirname($this->getCompiledWrapperPath()));
 
+        //Remove anything data that can't be communicated to the
+        //Lua runtime.
+        $environment = self::filter_non_communicable($environment);
+
         //If we haven't been provided with a lua interpreter, attempt
         //to use the LUA php extension. This is preferred, as it doesn't
         //incur the overhead of starting a new process.
@@ -319,6 +323,7 @@ class Looah
         //Extract the newly-created environment from the results.
         $environment = array_pop($result);
 
+        //Process the result, and return. 
         return $this->process($result);
     }
 
@@ -394,6 +399,14 @@ class Looah
         } catch (Exception $e) {
             throw new LooahException("Could not the evaluate Lua sandbox wrapper script");
         }
+    }
+
+    /**
+     * Removes any items which cannot be correctly communicated to the 
+     * interpreter/extension.
+     */
+    private static function filter_non_communicable($environment) {
+        return json_decode(@json_encode($environment), true);
     }
 
     /**
