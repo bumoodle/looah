@@ -25,8 +25,13 @@
 require 'lib/json'
 require 'lib/base64'
 
+--The extras library contains anything that 
+require 'lib/extras'
+
 -- Creates a new sandbox environment for scripts to safely run in.
-function make_sandbox(base_environment)
+-- base_environment: A table which will be merged into the sandbox environment automatically.
+-- random_seed: If specified, a number which will be used to see Lua's random number generator.
+function make_sandbox(base_environment, random_seed)
 
   -- Dummy function that returns nil, to quietly replace unsafe functions
   local function dummy(...)
@@ -166,9 +171,25 @@ function make_sandbox(base_environment)
   env.os.difftime = _G.os.difftime
   env.os.time = _G.os.time
 
-  --Allow JSON encode
+  --Allow JSON encoding/decoding.
   env.json = _G.json
-  --env.json.encode = _G.json.encode
+
+  --If a random seed was provided, use it to generate
+  --some nice, random numbers.
+  if random_seed then
+    env.math.randomseed(random_seed)
+    --Waste the first few random numbers, as this apparently
+    --increases entropy.
+    for i = 1, 10 do math.random() end
+  end
+
+  --If an extras module is present, load it into the environment.
+  if extras then
+    for i, v in pairs(extras) do
+      env[i] = v
+    end
+  end
+
   
   -- Return the new sandbox environment
   return env
@@ -262,12 +283,16 @@ function prepare_for_serialization(environment, exclude, include_functions)
       --which are prevalent on PHP (and in many database applications.)
       --Note that php's json_decode is currently broken when it comes to
       --binary data (e.g. unicode escape codes).
-      if type(v) == 'function' and include_functions then
-        functions[i] = to_base64(string.dump(v))
+      if type(v) == 'function' then
+
+        --If include functions is on, include a serialization of the function.
+        if include_functions then
+          functions[i] = to_base64(string.dump(v))
+        end
 
       --If we have a table, recurse to encapsulate each of its components.
       elseif type(v) == 'table' and i ~= '_FUNCTIONS' then
-        vars[i] = prepare_for_serialization(v)
+        vars[i] = prepare_for_serialization(v, nil, include_functions)
 
       --Otherwise, add it to our variables array.
       else
@@ -279,7 +304,9 @@ function prepare_for_serialization(environment, exclude, include_functions)
 
   --Add a local array of serialized functions, which can be used to
   --reacreate the functions provided at deserailziation time.
-  vars._FUNCTIONS = functions
+  if include_functions then
+    vars._FUNCTIONS = functions
+  end
 
   return vars
 end
@@ -331,10 +358,10 @@ end
 -- from within the chunk and 'err' is either nil or an error incurred while 
 -- executing the chunk; or halting after 'maxlines' lines, 'maxcalls' levels 
 -- of recursion, or 'maxtime' seconds.
-function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
+function make_wrapper(maxlines, maxcalls, maxtime, base_environment, random_seed)
   
   local hook = make_hook(maxlines, maxcalls, maxtime)
-  local env = make_sandbox(base_environment)
+  local env = make_sandbox(base_environment, random_seed)
 
   --Retreive a list of variables which only exist in the sandbox.
   --This is used to differentiate user variables from variables created by
@@ -370,7 +397,7 @@ function make_wrapper(maxlines, maxcalls, maxtime, base_environment)
       err = nil
     end
 
-    export_vars = prepare_for_serialization(env, sandbox_variables)
+    export_vars = prepare_for_serialization(env, sandbox_variables, true)
 
     -- Collect and return the results
     return env._OUTPUT, err, export_vars 
@@ -411,9 +438,12 @@ function main(arg)
   -- Attempt to extract the base environment from the first line provided on the standard input.
   -- This will be used to set variables in the sandbox.
   local base_environment = extract_initial_environment(io.stdin:read("*l"))
+
+  --Read a random seed from the second line provided on the standard input.
+  local random_seed = tonumber(io.stdin:read("*l"))
   
   -- Create a wrapper function, wrap()
-  local wrap = make_wrapper(tonumber(arg[1]), tonumber(arg[2]), tonumber(arg[3]), base_environment)
+  local wrap = make_wrapper(tonumber(arg[1]), tonumber(arg[2]), tonumber(arg[3]), base_environment, random_seed)
 
   -- Parse lines until the file ends.
   while true do

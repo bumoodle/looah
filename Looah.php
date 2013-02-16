@@ -391,8 +391,17 @@ class Looah
         
         try {
             $lua->include($this->getCompiledWrapperPath());
+
+            //Pass in the provided base environment to the lua interpreter...
             $lua->assign('base_environment', $base_environment);
-            $lua->eval("wrap = make_wrapper({$this->maxLines}, {$this->maxRecursionDepth}, {$this->maxTime}, base_environment)");
+
+            //And pass in a random seed, which will help to fix lua's bad random behavior.
+            $lua->assign('random_seed', mt_rand());
+
+            //Create the sandboxed wrapper, which will evaluate the given lua code...
+            $lua->eval("wrap = make_wrapper({$this->maxLines}, {$this->maxRecursionDepth}, {$this->maxTime}, base_environment, random_seed)");
+            
+            //And execute the code provided.
             $res = $lua->wrap($input);
 
             return $res;
@@ -549,6 +558,9 @@ class Looah
         //Send the base state to the interpreter using JSON.
         $base_environment = $base_environment ?: array();
         self::send_to_interpreter($pipes[0], json_encode($base_environment));
+
+        //And send the interpreter a random seed.
+        self::send_to_interpreter($pipes[0], mt_rand());
 
         //Transmit the chunk to be executed.
         self::send_to_interpreter($pipes[0], self::format_chunk($input));
