@@ -304,7 +304,7 @@ function prepare_for_serialization(environment, exclude, include_functions)
 
   --Add a local array of serialized functions, which can be used to
   --reacreate the functions provided at deserailziation time.
-  if include_functions then
+  if include_functions and next(functions) ~= nil then
     vars._FUNCTIONS = functions
   end
 
