@@ -25,8 +25,24 @@
 require 'lib/json'
 require 'lib/base64'
 
---The extras library contains anything that 
+--Extra functions for the Moodle install.
 require 'lib/extras'
+require 'lib/bit'
+
+--PenLight libraries
+utils       = require 'pl/utils'
+class       = require 'pl/class'
+permute     = require 'pl/permute'
+pretty      = require 'pl/pretty'
+stringx     = require 'pl/stringx'
+tablex      = require 'pl/tablex'
+List        = require 'pl/List'
+Map         = require 'pl/Map'
+MultiMap    = require 'pl/MultiMap'
+OrderedMap  = require 'pl/OrderedMap'
+operator    = require 'pl/operator'
+
+
 
 -- Creates a new sandbox environment for scripts to safely run in.
 -- base_environment: A table which will be merged into the sandbox environment automatically.
@@ -155,6 +171,7 @@ function make_sandbox(base_environment, random_seed)
   env._VERSION = _G._VERSION
   env.xpcall = _G.xpcall
   env.coroutine = deepcopy(_G.coroutine)
+  utils.import(stringx, _G.string)
   env.string = deepcopy(_G.string)
   env.string.dump = nil
   env.table = deepcopy(_G.table)
@@ -174,6 +191,22 @@ function make_sandbox(base_environment, random_seed)
   --Allow JSON encoding/decoding.
   env.json = _G.json
 
+  --Allow use of the bitwise operator
+  env.bit = _G.bit
+
+  --Allow usage of the _safe_ penlight functions.
+  --Be really careful what you put here!
+  env.List       = _G.List
+  env.Map        = _G.Map
+  env.MultiMap   = _G.MultiMap
+  env.OrderedMap = _G.OrderedMap
+  env.operator   = _G.operator
+  env.stringx    = _G.stringx
+
+  --Load penlight's tablex extensions and stringx into
+  --the sandboxed environment.
+  utils.import(tablex, env)
+
   --If a random seed was provided, use it to generate
   --some nice, random numbers.
   if random_seed then
@@ -185,9 +218,7 @@ function make_sandbox(base_environment, random_seed)
 
   --If an extras module is present, load it into the environment.
   if extras then
-    for i, v in pairs(extras) do
-      env[i] = v
-    end
+    utils.import(extras, env)
   end
 
   
@@ -386,7 +417,7 @@ function make_wrapper(maxlines, maxcalls, maxtime, base_environment, random_seed
       return nil, err, base_environment
     end
     
-    -- Set the chunk's environment, enable the debug hook, and execute it
+    -- Set the chunk'senvironment, enable the debug hook, and execute it
     setfenv(chunk, env)
     co = coroutine.create(chunk)
     debug.sethook(co, hook, "crl")
