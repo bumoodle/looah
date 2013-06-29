@@ -28,6 +28,7 @@ require 'lib/base64'
 --Extra functions for the Moodle install.
 require 'lib/extras'
 require 'lib/bit'
+require 'lib/boolean'
 
 --PenLight libraries
 utils       = require 'pl/utils'
@@ -89,10 +90,15 @@ function make_sandbox(base_environment, random_seed)
       env[i] = v
     end
 
+    --Workaround for the broken PHP lua extension.
+    --See its definition below.
+    restore_zeroes(env)
+
     --... and restore this environment's functions.
     if type(env._FUNCTIONS) == 'table' then
       restore_functions(env)
     end
+
   end
 
   -- "_OUTPUT" will accumulate the results of print() and friends
@@ -191,8 +197,9 @@ function make_sandbox(base_environment, random_seed)
   --Allow JSON encoding/decoding.
   env.json = _G.json
 
-  --Allow use of the bitwise operator
+  --Allow use of the bitwise operators and Boolean Algebra functions.
   env.bit = _G.bit
+  env.boolean = _G.boolean
 
   --Allow usage of the _safe_ penlight functions.
   --Be really careful what you put here!
@@ -308,6 +315,7 @@ function prepare_for_serialization(environment, exclude, include_functions)
   for i, v in pairs(environment) do
     if not exclude[i] then
 
+
       --If we have a function, add it to our functions array.
       --
       --Converting this to base64 eliminates the encoding issues
@@ -328,6 +336,13 @@ function prepare_for_serialization(environment, exclude, include_functions)
       --Otherwise, add it to our variables array.
       else
         vars[i] = v
+
+      end
+
+      --Workaround for the broken Lua PHP extension, which discards (!)
+      --index 0. We create an extra index _0, which is guaranteed to be equal to 0.
+      if i == 0 and type(v) ~= 'function' then
+        vars._0 = vars[i]
       end
 
     end
@@ -365,6 +380,25 @@ function restore_functions(environment)
   end
 
 end
+
+-- 
+-- Workaround for the broken PHP Lua extension, which discards any table entries with
+-- an index of 0. Restores all zero indices from the special "_0" indices created on serialization.
+--
+function restore_zeroes(environment)
+
+    if type(environment._0) ~= 'nil' then
+        environment[0] = environment._0
+    end
+
+    for i,v in pairs(environment) do
+        if type(v) == 'table' then
+            restore_zeroes(v)
+        end
+    end
+
+end
+
 
 --
 -- Retrieves the name of all 

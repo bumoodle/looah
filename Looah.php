@@ -315,6 +315,7 @@ class Looah
           }
             
           $result = $this->executeWithInterpreter($input, $environment);
+            
         }
 
         //Restore the original working directory.
@@ -393,7 +394,7 @@ class Looah
             $lua->include($this->getCompiledWrapperPath());
 
             //Pass in the provided base environment to the lua interpreter...
-            $lua->assign('base_environment', $base_environment);
+            @$lua->assign('base_environment', $base_environment);
 
             //And pass in a random seed, which will help to fix lua's bad random behavior.
             $lua->assign('random_seed', mt_rand());

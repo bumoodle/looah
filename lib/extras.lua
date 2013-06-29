@@ -30,6 +30,23 @@ extras.shuffle = function (array)
 end
 
 --
+-- Formats the given number using a Lua string formatting display base.
+--
+function format_and_pad(input, format, length)
+
+    --Assume a null length if no length was provided.
+    if length then
+        length = '0' .. length
+    else
+        length = ''
+    end
+
+    --Zero pad the string, if required.
+    return string.format("%" .. length .. format, input)
+
+end
+
+--
 -- Converts a decimal number to a binary string, optionally padding
 -- to the provided length.
 -- 
@@ -57,6 +74,18 @@ extras.decbin = function (int, length)
     return string.format("%" .. length .. "d", bin)
 end
 
+--
+-- Converts a decimal number to a hex string, optionally padding
+-- to the provided length.
+--
+extras.dechex = function(int, length) 
+    return format_and_pad(int, 'x', length)
+end
+
+extras.decoct = function(int, length)
+    return format_and_pad(int, 'o', length)
+end
+
 
 --
 -- Generates a function, which picks unique random numbers from within a range.
@@ -64,7 +93,7 @@ end
 extras.generate_unique_pool = function (low, high)
 
     --Create the unique value pool...
-    pool = tablex.range(low, high)
+    local pool = tablex.range(low, high)
 
     --Replace the unique_value function with a closure over the unique value pool.
     return function() 
