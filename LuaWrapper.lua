@@ -29,6 +29,7 @@ require 'lib/base64'
 require 'lib/extras'
 require 'lib/bit'
 require 'lib/boolean'
+require 'lib/circuits'
 
 --PenLight libraries
 utils       = require 'pl/utils'
@@ -201,6 +202,9 @@ function make_sandbox(base_environment, random_seed)
   env.bit = _G.bit
   env.boolean = _G.boolean
 
+  --Allow use of the circuits library.
+  env.circuits = _G.circuits
+
   --Allow usage of the _safe_ penlight functions.
   --Be really careful what you put here!
   env.List       = _G.List
@@ -227,6 +231,8 @@ function make_sandbox(base_environment, random_seed)
   if extras then
     utils.import(extras, env)
   end
+
+
 
   
   -- Return the new sandbox environment

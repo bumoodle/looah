@@ -115,3 +115,27 @@ extras.round = function (num, idp)
   local mult = 10^(idp or 0)
   return math.floor(num * mult + 0.5) / mult
 end
+
+--
+-- Returns true iff a given number is within the specified numeric distance.
+-- num: The response to be chcked.
+-- answer: The canonically correct answer.
+-- distance: The maximum delta above or below.
+--
+extras.within_delta = function(num, answer, distance)
+  return (num <= (answer + distance)) and (num >= (answer - distance))
+end
+
+--
+-- Returns true iff a given number is within the specified numeric percent.
+-- num: The response to be chcked.
+-- answer: The canonically correct answer.
+-- distance: The maximum percent of the answer that the number can be.
+--
+extras.within_percent = function(num, answer, percent)
+    distance = answer * percent * 0.01
+    return extras.within_delta(num, answer, distance)
+end
+
+
+
